@@ -1,7 +1,10 @@
 from pyparsing import Path
 import json5
-import datetime
+import shutil
 import pickle
+import zipfile
+from tqdm import tqdm
+import time
 
 from .StardewValley import StardewValley
 from .Mod import Mod
@@ -10,11 +13,22 @@ from .NexusMods.Nexus import GameId, NexusMods, NexusModAccount
 
 import os
 
+import errno, os, stat, shutil
+
+def handleRemoveReadonly(func, path, exc):
+  excvalue = exc[1]
+  if func in (os.rmdir, os.remove) and excvalue.errno == errno.EACCES:
+      os.chmod(path, stat.S_IRWXU| stat.S_IRWXG| stat.S_IRWXO) # 0777
+      func(path)
+  else:
+      raise
+
 class ResultModList():
     def __init__(self):
         self.updated = []
         self.hidden = []
         self.idnotfound = []
+        self.download = []
 
 class Manager():
     def __init__(self):
@@ -62,9 +76,6 @@ class Manager():
             else :
                 self.Mods.append(self.load_mod(ModsFolder.joinpath(folder),InfoJsonFile)) 
         i:Mod = Mod()
-        for i in self.Mods:
-            print(i.UniqueID,i.Name, i.UpdateKeys)
-            #print(i.Name,i.Version,i.UpdateKeys)
     
     def download_all_mods(
         self,output:Path = Path(os.getcwd()),
@@ -92,32 +103,98 @@ class Manager():
             print("output is not a directory")
             return
         i:Mod = Mod()
+        pbar = tqdm(total=len(self.Mods))
         for i in self.Mods:
             if (i.NUKP >= 0) and (not cache_objs.get(i.UniqueID) == True):
                 if( (i.UpdateKeys[i.NUKP] == "???") or (i.UpdateKeys[i.NUKP] == "-1")):
                     pass
                 else:
-                    print(i.Name,i.UniqueID,i.UpdateKeys[i.NUKP])
-                    info:Dict = N.get_mod_info(GId=GameId.STARDEWVALLEY,ModId=i.UpdateKeys[i.NUKP])
-                    current_time = datetime.datetime.now()
+                    info:dict = N.get_mod_info(GId=GameId.STARDEWVALLEY,ModId=i.UpdateKeys[i.NUKP])
                     if(not info["hidden"]):
-                        print("_"*100)
-                        print(info)
-                        print("MS:",datetime.datetime.now() - current_time,"\n")
-                        print("#"*100)
-                        current_time = datetime.datetime.now()
+                        pbar.desc = "Downloading: {0}".format(i.Name)
                         F_file = output.joinpath("{0} v{1}.zip".format(i.Name,info["version"]))
                         N.download_file(info["download_url"],F_file)
-                        print("MS:",datetime.datetime.now() - current_time,"\n")
-                        Res.updated.append(i)
+                        Res.download.append(i)
                     else:
                         Res.hidden.append(i)
             else:
-                print(i.Name,"Nexus key not found!")
                 Res.idnotfound.append(i)
             cache_objs[i.UniqueID] = True
             if(use_cache):
                 with open(cache_dir, 'wb') as f:
                     pickle.dump(cache_objs,f)
                     f.close()
+            pbar.update()
+        pbar.close()
+        return Res
+    def download_mod(
+        self,
+        mod:Mod,output:Path = Path(os.getcwd())
+    )->ResultModList:
+        if not output.is_dir():
+            print("output is not a directory")
+            return
+        m = ResultModList()
+        N = NexusMods()
+        N.login()
+        if (mod.NUKP >= 0):
+            if( (mod.UpdateKeys[mod.NUKP] == "???") or (mod.UpdateKeys[mod.NUKP] == "-1")):
+                pass
+            else:
+                info:dict = N.get_mod_info(GId=GameId.STARDEWVALLEY,ModId=mod.UpdateKeys[mod.NUKP])
+                if(not info["hidden"]):
+                    F_file = output.joinpath("{0} v{1}.zip".format(mod.Name,info["version"]))
+                    N.download_file(info["download_url"],F_file)
+                    m.download.append(mod)
+                else:
+                    m.hidden.append(mod)
+        else:
+            m.idnotfound(mod)
+        return m
+    def update_mods(
+        self,temp_dir:Path = Path(os.getcwd()),
+        proxie=None
+    )->ResultModList:
+        output = temp_dir
+        
+        Res = ResultModList()
+        N = NexusMods(proxie=proxie)
+        N.login()
+        if not output.is_dir():
+            print("output is not a directory")
+            return
+        i:Mod = Mod()
+        pbar = tqdm(total=len(self.Mods),leave=True)
+        for i in self.Mods:
+            if (i.NUKP >= 0):
+                if( (i.UpdateKeys[i.NUKP] == "???") or (i.UpdateKeys[i.NUKP] == "-1")):
+                    pass
+                else:
+                    pbar.desc = "checking: {0} ...".format(i.Name)
+                    info:dict = N.get_mod_info(GId=GameId.STARDEWVALLEY,ModId=i.UpdateKeys[i.NUKP])
+                    if(not info["hidden"]):
+                        if i.Version != info["version"]:
+                            pbar.desc = "updating: {0} ...".format(i.Name)
+                            F_file = output.joinpath("{0} v{1}.zip".format(i.Name,info["version"]))
+                            N.download_file(info["download_url"],F_file)
+
+                            # M_dir = str(i.Directory).split("\\Stardew Valley\\mods\\")
+                            # parts = M_dir[1].split("\\")
+                            # if (len(parts) > 1):
+                            #     shutil.rmtree(StardewValley.Dir.joinpath("mods",parts[0]))
+                            # else:
+                            shutil.rmtree(i.Directory, ignore_errors=False, onerror=handleRemoveReadonly)
+                            with zipfile.ZipFile(F_file, 'r') as zipObj:
+                                listOfFileNames = zipObj.namelist()
+                                for fileName in listOfFileNames:
+                                    if not fileName.endswith('ktop.ini') :
+                                        zipObj.extract(fileName,StardewValley.Dir.joinpath("mods"))
+                            # with zipfile.ZipFile(F_file, 'r') as zip_ref:
+                            #     zip_ref.extractall(StardewValley.Dir.joinpath("mods"))
+                            Res.updated.append(i)
+                    else:
+                        Res.hidden.append(i)
+            else:
+                Res.idnotfound.append(i)
+            pbar.update()
         return Res

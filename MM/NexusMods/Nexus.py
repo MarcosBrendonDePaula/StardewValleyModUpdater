@@ -6,6 +6,7 @@ from requests import Session
 import cloudscraper
 from bs4 import BeautifulSoup,Tag
 from requests import Response
+import os
 
 class NexusModAccount:
     def __init__(self, user:str, password:str):
@@ -68,8 +69,8 @@ class NexusMods():
         else: #
             print("token is not available")
     
-    def get_mod_info(self,GId:int = GameId.STARDEWVALLEY, ModId:int = 0)->Dict:
-        data:Dict = {
+    def get_mod_info(self,GId:int = GameId.STARDEWVALLEY, ModId:int = 0)->dict:
+        data:dict = {
             "hidden":False
         }
         
@@ -78,7 +79,6 @@ class NexusMods():
             return None
         
         URL:str = r"https://www.nexusmods.com/{0}/mods/{1}".format(GameId.Name(GId),ModId)
-        print(URL)
         
         res:Response = self.scraper.get(URL)
         bs4 = BeautifulSoup(res.content,"lxml")
@@ -130,7 +130,6 @@ class NexusMods():
                 #url Correction
                 if(url.find("/Core") == 0):
                     url = "https://www.nexusmods.com{0}".format(url)
-                print(url)
                 res = self.scraper.get(url)
 
                 bs4 = BeautifulSoup(res.content,"lxml")
@@ -147,10 +146,18 @@ class NexusMods():
         return data
     
     def download_file(self, Url:str ,path:Path):
-        file = self.scraper.get(Url)
+        if(path.exists()):
+            print(path,"exist")
+            return
+        file = self.scraper.get(Url,stream = True)
+       
         with open(path,"wb") as f:
-            f.write(file.content)
-        pass
+            try:
+                for chunk in file.iter_content(chunk_size=2048):
+                    f.write(chunk)
+            except:
+                f.close()
+                os.remove(path)
     
     def generate_file_link(self,file_id:int,game_id:int)->str:
         
